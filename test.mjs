@@ -290,6 +290,58 @@ assert.deepEqual(lw.urls, [`${base}/clicked`]);
 assert.equal(linkPage.url(), `${base}/with-link`);
 console.log('little arc: alt-cmd-click: ok');
 
+// Peek: a link from a locked tab that opens a new tab (target=_blank) becomes a Little Arc over the
+// window, the locked page dimmed behind it; another window taking focus closes it and undims the page.
+// The content script catches the click, so the page opens in the Peek directly: its tab has no opener.
+const pinnedPage = await pageFor(`${base}/x`);
+await pinnedPage.bringToFront();
+const peekWindow = async url => (await littleWindows()).find(w => w.urls[0] === `${base}${url}`);
+const dimmed = () => pinnedPage.evaluate(() => !!document.getElementById('erics-little-arc-dim'));
+const waitFor = async check => { for (let i = 0; i < 30 && !(await check()); i++) await sleep(100); return check(); };
+const openerOf = async url => sw.evaluate(async url => (await chrome.tabs.query({ url }))[0]?.openerTabId, `${base}${url}`);
+const mainWindow = await sw.evaluate(async id => (await chrome.tabs.get(id)).windowId, a2);
+const focusMain = async () => { await sw.evaluate(id => run(() => littleFocused(id)), mainWindow); await settle(); };
+
+await pinnedPage.evaluate(url => { document.body.innerHTML = `<a href="${url}" target="_blank">go</a>`; }, `${base}/peeked`);
+await pinnedPage.click('a');
+assert.ok(await waitFor(() => peekWindow('/peeked')));
+assert.equal((await peekWindow('/peeked')).type, 'popup');
+assert.equal(await openerOf('/peeked'), undefined);
+assert.equal(await sw.evaluate(async () => Object.keys((await chrome.storage.session.get('peek')).peek).length), 1);
+assert.ok(await waitFor(dimmed));
+await focusMain();
+assert.equal(await peekWindow('/peeked'), undefined);
+assert.equal(await dimmed(), false);
+console.log('little arc: peek from a locked tab, closed by focus elsewhere: ok');
+
+// window.open from the locked page's own script is caught the same way and returns null.
+assert.equal(await pinnedPage.evaluate(url => window.open(url) === null, `${base}/peek-opened`), true);
+assert.ok(await waitFor(() => peekWindow('/peek-opened')));
+assert.equal(await openerOf('/peek-opened'), undefined);
+await focusMain();
+console.log('little arc: peek from window.open: ok');
+
+// A new tab the content script didn't catch (here: made with an opener directly) still becomes a Peek,
+// moved out of the main window.
+const fallback = await sw.evaluate(async ([url, opener, windowId]) => (await chrome.tabs.create({ url, openerTabId: opener, windowId, active: true })).id, [`${base}/peek-fallback`, a2, mainWindow]);
+assert.ok(await waitFor(() => peekWindow('/peek-fallback')));
+assert.equal(await sw.evaluate(async id => (await chrome.tabs.query({ windowId: id }))[0].id, (await peekWindow('/peek-fallback')).id), fallback);
+await focusMain();
+assert.deepEqual((await littleWindows()).filter(w => w.urls[0].startsWith(`${base}/peek`)), []);
+console.log('little arc: peek fallback for a tab Chrome already opened: ok');
+
+// An unlocked tab's new-tab links are left to Chrome.
+await sw.evaluate(id => chrome.tabs.update(id, { pinned: false }), a2);
+await settle();
+await pinnedPage.evaluate(url => { document.body.innerHTML = `<a href="${url}" target="_blank">go</a>`; }, `${base}/not-peeked`);
+await pinnedPage.click('a');
+await sleep(500);
+assert.equal(await peekWindow('/not-peeked'), undefined);
+assert.equal(await openerOf('/not-peeked'), a2);
+await sw.evaluate(id => chrome.tabs.update(id, { pinned: true }), a2);
+await settle();
+console.log('little arc: no peek from an unpinned tab: ok');
+
 // A page that finished loading before it moved into a Little Arc still gets the bar.
 const loaded = await open('/already-loaded');
 await sleep(300);

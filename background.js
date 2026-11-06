@@ -73,6 +73,10 @@ chrome.tabs.onUpdated.addListener((tabId, change) => {
     const group = tab.groupId === -1 ? null : await chrome.tabGroups.get(tab.groupId);
     const isLocked = tab.pinned || LOCKED_GROUPS.includes(group?.title);
     await sync(p => { if (isLocked) p[tabId] ??= tab.url || tab.pendingUrl; else delete p[tabId]; });
+    // The tab's content script (little-click.js) catches new-tab links in locked tabs; it asks once per
+    // page load and hears about changes here. (A group renamed to or from CoreCore isn't pushed; those
+    // tabs fall back to the tab-then-Peek path until they reload.)
+    chrome.tabs.sendMessage(tabId, { little: 'locked', value: isLocked }).catch(() => {});
   });
 });
 
@@ -101,8 +105,9 @@ chrome.tabs.onRemoved.addListener((tabId, { isWindowClosing }) => {
 
 // New tabs open at the top of the tab list, just under the locked tabs (pinned, then the CoreCore
 // group), like Arc's Today list. A tab opened from a link in a normal tab stays where Chrome puts
-// it, right after that tab. One opened from a locked tab goes to the top, and if Chrome dropped it
-// into the locked group it's taken out, so it doesn't get locked. Tabs in other groups are left alone.
+// it, right after that tab. One opened in the background from a locked tab goes to the top, and if
+// Chrome dropped it into the locked group it's taken out, so it doesn't get locked; one opened in the
+// foreground from a locked tab becomes a Peek (little-arc.js). Tabs in other groups are left alone.
 const STARTUP_GRACE_MS = 5000; // session restore recreates every tab; leave those where they are
 let browserStarted = 0;
 let recreating = 0; // locked tabs we're putting back stay where they're put
@@ -132,6 +137,10 @@ chrome.tabs.onCreated.addListener(created => {
     // Chrome records an opener for ⌘T too; only a link (not the New Tab page) stays by its opener.
     const newTabPage = /^chrome:\/\/new-?tab/.test(created.pendingUrl || created.url);
     if (tab.openerTabId && !newTabPage && !(await isLocked(tab.openerTabId))) return;
+    if (tab.openerTabId && !newTabPage && tab.active) { // queues its own run(): don't wait for it inside this one
+      openPeek({ tabId: tab.id }, { id: tab.openerTabId, windowId: tab.windowId }).catch(console.error);
+      return;
+    }
     if (tab.groupId !== -1) {
       if (!LOCKED_GROUPS.includes((await chrome.tabGroups.get(tab.groupId)).title)) return;
       await chrome.tabs.ungroup(tab.id);

@@ -9,6 +9,7 @@
   "background": { "service_worker": "background.js" },
   "content_scripts": [
     { "matches": ["<all_urls>"], "js": ["little-click.js"], "all_frames": true, "run_at": "document_start" },
+    { "matches": ["<all_urls>"], "js": ["little-open.js"], "all_frames": true, "world": "MAIN", "run_at": "document_start" },
     { "matches": ["https://open.spotify.com/*", "https://music.youtube.com/*", "https://soundcloud.com/*", "https://music.apple.com/*",
         "https://listen.tidal.com/*", "https://*.bandcamp.com/*", "https://www.pandora.com/*", "https://music.amazon.com/*",
         "https://www.deezer.com/*"],

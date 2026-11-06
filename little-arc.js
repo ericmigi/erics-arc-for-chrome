@@ -2,6 +2,8 @@
 // - a Global shortcut opens one with a search box (little.html), from any app
 // - links opened from other apps open in one
 // - ⌥⌘-click a link opens it in one (little-click.js)
+// - a link from a locked tab (pinned or CoreCore) that opens a new tab opens as a Peek: a Little Arc
+//   over the window it came from, page behind dimmed; focusing any other window closes it
 // - "Open in Chrome" moves the page into the main window as a normal tab; ▾ picks a window or tab group
 //   (both also have shortcuts, see README)
 // - an "Open in Chrome" bar sits top-right of the page (little-bar.js)
@@ -16,8 +18,8 @@ const LITTLE_ARCHIVE_MS = 12 * 60 * 60 * 1000;
 
 // Session-state writes go through run() (background.js) so focus events can't clobber a new window.
 async function littleState() {
-  const { little = {}, lastNormal, focused } = await chrome.storage.session.get(['little', 'lastNormal', 'focused']);
-  return { little, lastNormal, focused };
+  const { little = {}, peek = {}, lastNormal, focused } = await chrome.storage.session.get(['little', 'peek', 'lastNormal', 'focused']);
+  return { little, peek, lastNormal, focused };
 }
 
 async function littleBounds() {
@@ -32,9 +34,9 @@ async function littleBounds() {
   };
 }
 
-async function openLittle({ url, tabId } = {}) {
+async function openLittle({ url, tabId, bounds } = {}) {
   const source = tabId ? { tabId } : { url: url || chrome.runtime.getURL('little.html') };
-  const w = await chrome.windows.create({ ...source, ...(await littleBounds()), type: 'popup', focused: true });
+  const w = await chrome.windows.create({ ...source, ...(bounds || await littleBounds()), type: 'popup', focused: true });
   await run(async () => {
     const { little } = await littleState();
     little[w.id] = Date.now();
@@ -47,6 +49,54 @@ async function openLittle({ url, tabId } = {}) {
 
 async function isLittleWindow(windowId) {
   return windowId in (await littleState()).little;
+}
+
+// Peek, like Arc's: a link from a locked tab that would open a new tab opens as a Little Arc sized to
+// sit over the window it came from, with that page dimmed behind it. Any other window taking focus
+// (clicking the dimmed page counts) closes it; Open in Chrome keeps it as a tab. It's a popup window
+// in front of Chrome, not a sheet inside it, so it has its own title bar.
+const PEEK_INSET = { x: 80, y: 40 };
+const PEEK_MAX_WIDTH = 1100;
+
+// source: { url } straight from a click the content script caught (no tab in the main window first),
+// or { tabId } for a tab Chrome already made (what the content script didn't see: forms, a click
+// before it knew the tab was locked). over: the locked tab it came from.
+async function openPeek(source, over) {
+  const win = await chrome.windows.get(over.windowId);
+  const width = Math.min(PEEK_MAX_WIDTH, win.width - 2 * PEEK_INSET.x);
+  const bounds = {
+    width,
+    height: win.height - 2 * PEEK_INSET.y,
+    left: Math.round(win.left + (win.width - width) / 2),
+    top: win.top + PEEK_INSET.y,
+  };
+  const w = await openLittle({ ...source, bounds });
+  await run(async () => {
+    const { peek } = await littleState();
+    peek[w.id] = { tabId: over.id };
+    await chrome.storage.session.set({ peek });
+  });
+  await dim(over.id, true);
+  return w;
+}
+
+function dim(tabId, on) {
+  return chrome.scripting.executeScript({ target: { tabId }, args: [on], func: on => {
+    const id = 'erics-little-arc-dim';
+    document.getElementById(id)?.remove();
+    if (!on) return;
+    const shade = document.createElement('div');
+    shade.id = id;
+    shade.style.cssText = 'all: initial; display: block; position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,.35);';
+    document.documentElement.append(shade);
+  } }).catch(() => {});
+}
+
+async function closePeeks(exceptWindowId) {
+  const { peek } = await littleState();
+  for (const id of Object.keys(peek)) {
+    if (+id !== exceptWindowId) await chrome.windows.remove(+id).catch(() => {});
+  }
 }
 
 // Normal windows and their tab groups, most recently focused window first: where a Little Arc can go.
@@ -108,28 +158,36 @@ chrome.webNavigation.onCompleted.addListener(async d => {
   if (tab && (await isLittleWindow(tab.windowId))) await showLittleBar(d.tabId);
 });
 
-chrome.windows.onFocusChanged.addListener(windowId => run(async () => {
+async function littleFocused(windowId) {
   const { little, focused } = await littleState();
   const now = Date.now();
   if (focused in little) little[focused] = now;
   if (windowId in little) little[windowId] = now;
   const set = { little, focused: windowId };
-  if (windowId !== chrome.windows.WINDOW_ID_NONE && !(windowId in little)) {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return chrome.storage.session.set(set); // another app: Peeks stay
+  if (!(windowId in little)) {
     const w = await chrome.windows.get(windowId).catch(() => null);
     if (w?.type === 'normal') set.lastNormal = windowId;
   }
   await chrome.storage.session.set(set);
-}));
+  await closePeeks(windowId);
+}
+chrome.windows.onFocusChanged.addListener(windowId => run(() => littleFocused(windowId)));
 
 chrome.windows.onRemoved.addListener(windowId => run(async () => {
-  const { little } = await littleState();
+  const { little, peek } = await littleState();
   if (!(windowId in little)) return;
   delete little[windowId];
-  await chrome.storage.session.set({ little });
+  const over = peek[windowId];
+  delete peek[windowId];
+  await chrome.storage.session.set({ little, peek });
+  if (over) await dim(over.tabId, false);
 }));
 
+// A Peek's size comes from its window each time; only a Little Arc you resized is remembered.
 chrome.windows.onBoundsChanged.addListener(async w => {
-  if (!(await isLittleWindow(w.id))) return;
+  const { little, peek } = await littleState();
+  if (!(w.id in little) || w.id in peek) return;
   const { left, top, width, height } = w;
   await chrome.storage.local.set({ littleBounds: { left, top, width, height } });
 });
@@ -156,6 +214,8 @@ async function littleGo(tabId, text) {
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.little === 'open') openLittle({ url: msg.url }).then(() => reply(true));
+  else if (msg.little === 'peek') openPeek({ url: msg.url }, sender.tab).then(() => reply(true));
+  else if (msg.little === 'locked?') isLocked(sender.tab.id).then(reply);
   else if (msg.little === 'go') littleGo(sender.tab.id, msg.text).then(() => reply(true));
   else if (msg.little === 'targets') littleTargets().then(reply);
   else if (msg.little === 'shortcuts') chrome.commands.getAll().then(cs => reply(Object.fromEntries(cs.map(c => [c.name, c.shortcut]))));

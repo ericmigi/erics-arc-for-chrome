@@ -98,7 +98,7 @@ Locked URLs survive restarts by matching tabs in order, per pinned area and per 
 
 ### New tabs at the top
 
-New tabs open at the top of the tab list, right under the locked tabs, like Arc's Today list. That includes ⌘T and Little Arcs moved into Chrome. A link opened in a new tab from a normal tab lands right after that tab. A link opened from a pinned or CoreCore tab goes to the top instead, and doesn't join CoreCore (and get locked). Tabs in your other groups are left alone, and session restore doesn't reorder anything.
+New tabs open at the top of the tab list, right under the locked tabs, like Arc's Today list. That includes ⌘T and Little Arcs moved into Chrome. A link opened in a new tab from a normal tab lands right after that tab. A link opened in the background (⌘-click) from a pinned or CoreCore tab goes to the top instead, and doesn't join CoreCore (and get locked); one that opens in the foreground becomes a Peek (below). Tabs in your other groups are left alone, and session restore doesn't reorder anything.
 
 ### ⌃Tab by recent use
 
@@ -112,6 +112,7 @@ Small throwaway windows for quick lookups. They're Chrome popup windows: no tab 
 
 - **⌥⇧N**, from any app: a new Little Arc with a search box. Type a URL or a search (uses Chrome's default search engine). Esc closes it.
 - **Links from other apps** (Slack, Mail, …) open in a Little Arc. They land in the main window for a moment first, so it flashes.
+- **Peek**: a link from a pinned or CoreCore tab that would open a new tab opens as a Little Arc over the window instead, with the page behind dimmed, like Arc's Peek. Click the dimmed page or any other window to close it; ⌘O keeps it as a tab. It's a window in front of Chrome, not a sheet inside it, so it has its own title bar. Links (`target="_blank"`) and the page's own `window.open` are caught before Chrome makes a tab; anything else that opens a new tab from a locked tab (a form, say) passes through the main window first and flashes.
 - **⌥⌘-click** a link on any page to open it in a Little Arc.
 - **⌘L** or **🔗** (top right): an address field with the page's URL selected, so ⌘C copies it. Type a URL or search and press Enter to go there; Esc closes it. (Chrome's popup windows have no address bar of their own.)
 - **⌘O** or **Open in Chrome** (top right of the page): move it into the main window as a normal tab.
